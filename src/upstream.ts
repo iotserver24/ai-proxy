@@ -76,7 +76,6 @@ export function isRetryableError(response: Response): boolean {
     status === 400 ||
     status === 401 ||
     status === 403 ||
-    status === 422 ||
-    status === 429
+    status === 422
   );
 }
