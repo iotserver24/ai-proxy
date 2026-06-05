@@ -1,5 +1,5 @@
 import type { Request, Response as ExpressResponse } from 'express';
-import { callUpstream, isRetryableError, UPSTREAM_CHAT_PATH, UPSTREAM_RESPONSES_PATH } from '../upstream.js';
+import { callUpstream, isRetryableError, UPSTREAM_CHAT_PATH, UPSTREAM_MESSAGES_PATH } from '../upstream.js';
 import { normalizeResponses } from '../utils/normalize.js';
 import { initSSE, writeSSEEvent, parseSSELine } from '../utils/sse.js';
 import crypto from 'crypto';
@@ -14,7 +14,7 @@ export async function handleResponses(req: Request, res: ExpressResponse): Promi
     const upstreamRes = await callUpstream(path, normalized, stream);
 
     if (!upstreamRes.ok && attemptNum < 2 && isRetryableError(upstreamRes)) {
-      const altPath = path === UPSTREAM_CHAT_PATH ? UPSTREAM_RESPONSES_PATH : UPSTREAM_CHAT_PATH;
+      const altPath = path === UPSTREAM_CHAT_PATH ? UPSTREAM_MESSAGES_PATH : UPSTREAM_CHAT_PATH;
       console.log(`[${reqId}] retry ${path} -> ${altPath} (status ${upstreamRes.status})`);
       return attempt(altPath, attemptNum + 1);
     }

@@ -1,0 +1,41 @@
+model = "gpt-5.5"
+model_provider = "proxy"
+model_reasoning_effort = "xhigh"
+
+[model_providers.proxy]
+name = "AI Proxy"
+base_url = "https://new-api.xibe.app/v1"
+wire_api = "responses"
+stream_idle_timeout_ms = 300000
+
+[projects."/home/r3ap3reditz/codes/xibecode"]
+trust_level = "trusted"
+
+[projects."/home/r3ap3reditz/codes/App/Anisurge-V2-site"]
+trust_level = "trusted"
+
+[projects."/home/r3ap3reditz/codes/App"]
+trust_level = "trusted"
+
+[profiles.ollama-launch]
+openai_base_url = "http://127.0.0.1:11434/v1/"
+forced_login_method = "api"
+model_provider = "ollama-launch"
+
+[tui.model_availability_nux]
+"gpt-5.5" = 1
+
+[model_providers.ollama-launch]
+name = "Ollama"
+base_url = "http://127.0.0.1:11434/v1/"
+
+[model_providers.proxy]
+name = "AI Proxy"
+base_url = "https://new-api.xibe.app/v1"
+wire_api = "responses"
+stream_idle_timeout_ms = 300000
+
+[profiles.proxy]
+model_provider = "proxy"
+model = "gpt-5.5"
+model_reasoning_effort = "xhigh"
