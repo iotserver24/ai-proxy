@@ -51,6 +51,25 @@ export async function callUpstream(
   }
 }
 
+export async function callUpstreamGet(path: string): Promise<Response> {
+  const url = `${UPSTREAM_BASE_URL}${path}`;
+  const headers = buildHeaders(false);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers,
+      signal: controller.signal,
+    });
+    return response;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export function isRetryableError(response: Response): boolean {
   const status = response.status;
   return (
