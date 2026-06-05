@@ -1,0 +1,1 @@
+{"version":3,"file":"upstream.d.ts","sourceRoot":"","sources":["../src/upstream.ts"],"names":[],"mappings":"AAAA,eAAO,MAAM,iBAAiB,+BAA+B,CAAC;AAC9D,eAAO,MAAM,kBAAkB,sBAAsB,CAAC;AACtD,eAAO,MAAM,sBAAsB,cAAc,CAAC;AA0BlD,wBAAsB,YAAY,CAChC,IAAI,EAAE,MAAM,EACZ,IAAI,EAAE,OAAO,EACb,MAAM,EAAE,OAAO,GACd,OAAO,CAAC,QAAQ,CAAC,CAkBnB;AAED,wBAAgB,gBAAgB,CAAC,QAAQ,EAAE,QAAQ,GAAG,OAAO,CAS5D"}
