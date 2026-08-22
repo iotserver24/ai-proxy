@@ -13,10 +13,11 @@ function getAgentKey(): string {
 }
 
 function buildHeaders(stream: boolean): Record<string, string> {
-  const headers: Record<string, string> = {
+  return {
     Authorization: `Bearer ${getAgentKey()}`,
     'Content-Type': 'application/json',
     Accept: stream ? 'text/event-stream' : 'application/json',
+    // AgentRouter requires the client-identifying headers below for this route.
     'User-Agent': 'QwenCode/0.17.1 (linux; x64)',
     'x-stainless-arch': 'x64',
     'x-stainless-lang': 'js',
@@ -24,7 +25,6 @@ function buildHeaders(stream: boolean): Record<string, string> {
     'x-stainless-runtime': 'node',
     'x-stainless-runtime-version': 'v22.22.2',
   };
-  return headers;
 }
 
 export async function callUpstream(
@@ -39,13 +39,12 @@ export async function callUpstream(
   const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
 
   try {
-    const response = await fetch(url, {
+    return await fetch(url, {
       method: 'POST',
       headers,
       body: JSON.stringify(body),
       signal: controller.signal,
     });
-    return response;
   } finally {
     clearTimeout(timer);
   }
@@ -59,23 +58,17 @@ export async function callUpstreamGet(path: string): Promise<Response> {
   const timer = setTimeout(() => controller.abort(), UPSTREAM_TIMEOUT_MS);
 
   try {
-    const response = await fetch(url, {
+    return await fetch(url, {
       method: 'GET',
       headers,
       signal: controller.signal,
     });
-    return response;
   } finally {
     clearTimeout(timer);
   }
 }
 
 export function isRetryableError(response: Response): boolean {
-  const status = response.status;
-  return (
-    status === 400 ||
-    status === 401 ||
-    status === 403 ||
-    status === 422
-  );
+  // Auth failures are not fixed by switching wire formats.
+  return [400, 404, 405, 422].includes(response.status);
 }

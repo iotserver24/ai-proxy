@@ -14,28 +14,71 @@ export interface NormalizedRequest {
   messages: NormalizedMessage[];
   max_tokens?: number;
   tools?: any[];
+  tool_choice?: any;
+  response_format?: any;
+  parallel_tool_calls?: boolean;
+  [key: string]: any;
 }
 
 const DEFAULT_MODEL = 'gpt-5.5';
 
 export function normalizeOpenAI(body: any): NormalizedRequest {
-  return {
+  const result: NormalizedRequest = {
     model: body.model || DEFAULT_MODEL,
     stream: !!body.stream,
     messages: (body.messages || []).map(normalizeMessage),
   };
+
+  copyOptionalFields(body, result, [
+    'max_tokens',
+    'max_completion_tokens',
+    'temperature',
+    'top_p',
+    'stop',
+    'n',
+    'stream_options',
+    'tools',
+    'tool_choice',
+    'parallel_tool_calls',
+    'response_format',
+    'reasoning_effort',
+    'frequency_penalty',
+    'presence_penalty',
+    'seed',
+    'user',
+    'metadata',
+    'store',
+    'service_tier',
+  ]);
+
+  return result;
 }
 
 export function normalizeAnthropic(body: any): NormalizedRequest {
-  return {
+  const result: NormalizedRequest = {
     model: body.model || DEFAULT_MODEL,
     stream: !!body.stream,
     max_tokens: body.max_tokens,
-    messages: (body.messages || []).map((m: any) => ({
-      role: m.role,
-      content: typeof m.content === 'string' ? m.content : extractText(m.content),
-    })),
+    messages: (body.messages || []).flatMap(normalizeAnthropicMessages),
   };
+
+  if (Array.isArray(body.tools) && body.tools.length > 0) {
+    result.tools = anthropicToolsToOpenAI(body.tools);
+  }
+  if (body.tool_choice !== undefined) {
+    result.tool_choice = anthropicToolChoiceToOpenAI(body.tool_choice);
+  }
+  if (body.system !== undefined) {
+    result.messages.unshift({ role: 'system', content: body.system });
+  }
+  copyOptionalFields(body, result, [
+    'temperature',
+    'top_p',
+    'stop_sequences',
+    'metadata',
+  ]);
+
+  return result;
 }
 
 export function normalizeResponses(body: any): NormalizedRequest {
@@ -44,8 +87,6 @@ export function normalizeResponses(body: any): NormalizedRequest {
   if (body.instructions) {
     messages.push({ role: 'system', content: body.instructions });
   }
-
-
 
   const input = body.input;
   if (typeof input === 'string') {
@@ -67,7 +108,7 @@ export function normalizeResponses(body: any): NormalizedRequest {
               type: 'function',
               function: {
                 name: item.name,
-                arguments: typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments),
+                arguments: stringifyJson(item.arguments),
               },
             }],
           });
@@ -75,16 +116,15 @@ export function normalizeResponses(body: any): NormalizedRequest {
         case 'function_call_output':
           messages.push({
             role: 'tool',
-            content: typeof item.output === 'string' ? item.output : JSON.stringify(item.output),
+            content: stringifyContent(item.output),
             tool_call_id: item.call_id,
           });
           break;
-        case 'reasoning':
-          messages.push({
-            role: 'assistant',
-            content: extractReasoningText(item),
-          });
+        case 'reasoning': {
+          const reasoning = extractReasoningText(item);
+          if (reasoning) messages.push({ role: 'assistant', content: reasoning });
           break;
+        }
         case 'item_reference':
           break;
       }
@@ -97,12 +137,28 @@ export function normalizeResponses(body: any): NormalizedRequest {
     messages,
   };
 
-  if (body.tools && body.tools.length > 0) {
-    result.tools = body.tools;
+  if (Array.isArray(body.tools) && body.tools.length > 0) {
+    result.tools = responsesToolsToOpenAI(body.tools);
   }
-  if (body.max_tokens) {
-    result.max_tokens = body.max_tokens;
+  if (body.tool_choice !== undefined) {
+    result.tool_choice = responsesToolChoiceToOpenAI(body.tool_choice);
   }
+  if (body.parallel_tool_calls !== undefined) {
+    result.parallel_tool_calls = body.parallel_tool_calls;
+  }
+
+  const maxTokens = body.max_output_tokens ?? body.max_tokens;
+  if (maxTokens !== undefined) {
+    result.max_tokens = maxTokens;
+  }
+  copyOptionalFields(body, result, [
+    'temperature',
+    'top_p',
+    'reasoning_effort',
+    'response_format',
+    'metadata',
+    'service_tier',
+  ]);
 
   return result;
 }
@@ -121,7 +177,7 @@ function responsesMessageToChat(item: any): NormalizedMessage {
 
   if (Array.isArray(content)) {
     const blocks = content.map(block => {
-      if (block.type === 'input_text' || block.type === 'text') {
+      if (block.type === 'input_text' || block.type === 'text' || block.type === 'output_text') {
         return { type: 'text', text: block.text };
       }
       if (block.type === 'input_image') {
@@ -145,8 +201,9 @@ function extractReasoningText(item: any): string {
 }
 
 function extractText(blocks: any[]): string {
+  if (!Array.isArray(blocks)) return '';
   return blocks
-    .filter((b: any) => b.type === 'text')
+    .filter((b: any) => b?.type === 'text')
     .map((b: any) => b.text)
     .join('\n');
 }
@@ -157,89 +214,104 @@ export function buildAnthropicBody(req: any): any {
 
   if (req.instructions) {
     system = req.instructions;
+  } else if (req.system) {
+    system = typeof req.system === 'string' ? req.system : extractText(req.system);
   }
 
-  const input = req.input;
+  const input = req.input ?? req.messages;
   if (typeof input === 'string') {
     messages.push({ role: 'user', content: input });
   } else if (Array.isArray(input)) {
     for (const item of input) {
-      if (!item || !item.type) continue;
+      if (!item) continue;
 
-      switch (item.type) {
-        case 'message': {
-          messages.push(responsesItemToAnthropicMessage(item));
-          break;
-        }
-        case 'function_call': {
-          const args = typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments);
-          messages.push({
-            role: 'assistant',
-            content: [{
-              type: 'tool_use',
-              id: item.call_id || item.id,
-              name: item.name,
-              input: JSON.parse(args),
-            }],
-          });
-          break;
-        }
-        case 'function_call_output': {
-          messages.push({
-            role: 'user',
-            content: [{
-              type: 'tool_result',
-              tool_use_id: item.call_id,
-              content: typeof item.output === 'string' ? item.output : JSON.stringify(item.output),
-            }],
-          });
-          break;
-        }
-        case 'reasoning':
-          break;
-        case 'item_reference':
-          break;
+      if (item.type === 'message') {
+        messages.push(responsesItemToAnthropicMessage(item));
+        continue;
+      }
+      if (item.type === 'function_call') {
+        messages.push({
+          role: 'assistant',
+          content: [{
+            type: 'tool_use',
+            id: item.call_id || item.id,
+            name: item.name,
+            input: parseJsonObject(item.arguments),
+          }],
+        });
+        continue;
+      }
+      if (item.type === 'function_call_output') {
+        messages.push({
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: item.call_id,
+            content: stringifyContent(item.output),
+          }],
+        });
+        continue;
+      }
+      if (item.role && item.content !== undefined) {
+        messages.push({
+          role: item.role,
+          content: typeof item.content === 'string' ? item.content : item.content,
+        });
       }
     }
   }
 
   const body: any = {
     model: req.model || DEFAULT_MODEL,
-    max_tokens: req.max_tokens || 8192,
+    max_tokens: req.max_tokens ?? req.max_output_tokens ?? 8192,
     stream: !!req.stream,
     messages,
   };
 
-  if (system) {
-    body.system = system;
+  if (system) body.system = system;
+  if (Array.isArray(req.tools) && req.tools.length > 0) {
+    body.tools = responsesToolsToAnthropic(req.tools);
   }
-  if (req.tools && req.tools.length > 0) {
-    body.tools = req.tools;
+  if (req.tool_choice !== undefined) {
+    body.tool_choice = responsesToolChoiceToAnthropic(req.tool_choice);
   }
+  copyOptionalFields(req, body, ['temperature', 'top_p', 'stop_sequences', 'metadata']);
 
   return body;
 }
 
 export function anthropicToResponses(anth: any, model: string): any {
   const now = Math.floor(Date.now() / 1000);
-  const msgId = `msg_${crypto.randomUUID().slice(0, 8)}`;
+  const output: any[] = [];
   const text = extractAnthropicText(anth);
+
+  if (text) {
+    output.push({
+      type: 'message',
+      id: `msg_${crypto.randomUUID().slice(0, 8)}`,
+      role: 'assistant',
+      content: [{ type: 'output_text', text, annotations: [] }],
+    });
+  }
+
+  for (const block of Array.isArray(anth.content) ? anth.content : []) {
+    if (block?.type !== 'tool_use') continue;
+    output.push({
+      type: 'function_call',
+      id: block.id || `fc_${crypto.randomUUID().slice(0, 8)}`,
+      call_id: block.id || `call_${crypto.randomUUID().slice(0, 8)}`,
+      name: block.name,
+      arguments: stringifyJson(block.input ?? {}),
+    });
+  }
 
   return {
     id: `resp_${crypto.randomUUID().slice(0, 8)}`,
     object: 'response',
     created: now,
     model: anth.model || model,
-    output: [
-      {
-        type: 'message',
-        id: msgId,
-        role: 'assistant',
-        content: [
-          { type: 'output_text', text, annotations: [] },
-        ],
-      },
-    ],
+    output,
+    status: 'completed',
     usage: {
       input_tokens: anth.usage?.input_tokens || 0,
       output_tokens: anth.usage?.output_tokens || 0,
@@ -251,7 +323,7 @@ export function anthropicToResponses(anth: any, model: string): any {
 function extractAnthropicText(anth: any): string {
   const content = anth.content || [];
   return content
-    .filter((b: any) => b.type === 'text')
+    .filter((b: any) => b?.type === 'text')
     .map((b: any) => b.text)
     .join('');
 }
@@ -270,7 +342,7 @@ function responsesItemToAnthropicMessage(item: any): any {
 
   if (Array.isArray(content)) {
     const blocks = content.map(block => {
-      if (block.type === 'input_text' || block.type === 'text') {
+      if (block.type === 'input_text' || block.type === 'text' || block.type === 'output_text') {
         return { type: 'text', text: block.text };
       }
       if (block.type === 'input_image') {
@@ -316,4 +388,127 @@ function normalizeMessage(m: any): NormalizedMessage {
     tool_call_id: m.tool_call_id,
     name: m.name,
   };
+}
+
+function normalizeAnthropicMessages(m: any): NormalizedMessage[] {
+  if (!Array.isArray(m?.content)) return [normalizeMessage(m)];
+
+  const textBlocks = m.content.filter((block: any) => block?.type === 'text');
+  const toolUseBlocks = m.content.filter((block: any) => block?.type === 'tool_use');
+  const toolResultBlocks = m.content.filter((block: any) => block?.type === 'tool_result');
+  const messages: NormalizedMessage[] = [];
+
+  if (textBlocks.length > 0 || (toolUseBlocks.length > 0 && m.role === 'assistant')) {
+    messages.push({
+      role: m.role,
+      content: textBlocks.length > 0 ? textBlocks.map((block: any) => block.text).join('') : null,
+      ...(toolUseBlocks.length > 0 ? {
+        tool_calls: toolUseBlocks.map((block: any) => ({
+          id: block.id,
+          type: 'function',
+          function: {
+            name: block.name,
+            arguments: stringifyJson(block.input ?? {}),
+          },
+        })),
+      } : {}),
+    });
+  }
+
+  for (const block of toolResultBlocks) {
+    messages.push({
+      role: 'tool',
+      content: stringifyContent(block.content),
+      tool_call_id: block.tool_use_id,
+    });
+  }
+
+  return messages.length > 0 ? messages : [normalizeMessage(m)];
+}
+
+function copyOptionalFields(source: any, target: any, fields: string[]): void {
+  for (const field of fields) {
+    if (source?.[field] !== undefined) target[field] = source[field];
+  }
+}
+
+function stringifyContent(value: any): string {
+  return typeof value === 'string' ? value : JSON.stringify(value ?? '');
+}
+
+function stringifyJson(value: any): string {
+  return typeof value === 'string' ? value : JSON.stringify(value ?? {});
+}
+
+function parseJsonObject(value: any): Record<string, any> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(typeof value === 'string' ? value : '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function responsesToolsToOpenAI(tools: any[]): any[] {
+  return tools.map(tool => {
+    if (tool?.type !== 'function' || tool.function) return tool;
+    return {
+      type: 'function',
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters || tool.input_schema || { type: 'object', properties: {} },
+        ...(tool.strict === undefined ? {} : { strict: tool.strict }),
+      },
+    };
+  });
+}
+
+function responsesToolsToAnthropic(tools: any[]): any[] {
+  return tools.map(tool => {
+    if (tool?.name && tool.input_schema) return tool;
+    const fn = tool?.function || tool || {};
+    return {
+      name: fn.name,
+      description: fn.description,
+      input_schema: fn.parameters || fn.input_schema || { type: 'object', properties: {} },
+    };
+  });
+}
+
+function anthropicToolsToOpenAI(tools: any[]): any[] {
+  return tools.map(tool => ({
+    type: 'function',
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.input_schema || { type: 'object', properties: {} },
+    },
+  }));
+}
+
+function responsesToolChoiceToOpenAI(choice: any): any {
+  if (choice && typeof choice === 'object' && choice.type === 'function' && choice.name) {
+    return { type: 'function', function: { name: choice.name } };
+  }
+  return choice;
+}
+
+function anthropicToolChoiceToOpenAI(choice: any): any {
+  if (!choice || typeof choice !== 'object') return choice;
+  if (choice.type === 'any') return 'required';
+  if (choice.type === 'tool' && choice.name) {
+    return { type: 'function', function: { name: choice.name } };
+  }
+  return choice.type || choice;
+}
+
+function responsesToolChoiceToAnthropic(choice: any): any {
+  if (choice === 'required') return { type: 'any' };
+  if (choice && typeof choice === 'object' && choice.type === 'function') {
+    const name = choice.name || choice.function?.name;
+    return name ? { type: 'tool', name } : { type: 'auto' };
+  }
+  return choice;
 }

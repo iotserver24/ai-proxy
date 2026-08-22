@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
+    "test": "tsx --test test/*.test.ts",
     "start": "node dist/server.js",
     "dev": "tsx src/server.ts"
   },
