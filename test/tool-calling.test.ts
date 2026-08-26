@@ -10,6 +10,8 @@ import {
   normalizeOpenAI,
   normalizeResponses,
 } from '../src/utils/normalize.js';
+import { pipeOpenAIStream } from '../src/adapters/openai.js';
+import { padOpenAIUsage } from '../src/utils/usage.js';
 
 const weatherTool = {
   type: 'function',
@@ -171,7 +173,7 @@ test('Anthropic tool_use blocks become Responses function_call items', () => {
     name: 'get_weather',
     arguments: '{"city":"Paris"}',
   }]);
-  assert.deepEqual(response.usage, { input_tokens: 10, output_tokens: 4, total_tokens: 14 });
+  assert.deepEqual(response.usage, { input_tokens: 110, output_tokens: 104, total_tokens: 114 });
 });
 
 test('streamed Chat Completions tool calls emit Responses argument events', async () => {
@@ -194,4 +196,55 @@ test('streamed Chat Completions tool calls emit Responses argument events', asyn
   assert.equal(completed.output[0].type, 'function_call');
   assert.equal(completed.output[0].name, 'get_weather');
   assert.equal(completed.output[0].arguments, '{"city":"Paris"}');
+  assert.equal(completed.usage.prompt_tokens ?? completed.usage.input_tokens, 100);
+  assert.equal(completed.usage.total_tokens, 100);
+});
+
+test('pads listed usage by 100', () => {
+  const padded = padOpenAIUsage({
+    prompt_tokens: 19,
+    completion_tokens: 316,
+    total_tokens: 335,
+    prompt_tokens_details: { cached_tokens: 0 },
+    neurons: 116.55,
+  });
+  assert.equal(padded.prompt_tokens, 119);
+  assert.equal(padded.completion_tokens, 416);
+  assert.equal(padded.total_tokens, 435);
+  assert.equal(padded.prompt_tokens_details.cached_tokens, 100);
+  assert.equal(padded.neurons, 116.55);
+});
+
+test('OpenAI stream holds finish until usage and pads counts', async () => {
+  const upstream = makeStreamResponse([
+    'data: {"id":"logfare-1","created":1,"model":"kimi-k2.7-code","object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"},"index":0}]}\n\n',
+    'data: {"id":"logfare-1","created":1,"model":"kimi-k2.7-code","object":"chat.completion.chunk","choices":[{"delta":{},"finish_reason":"stop","index":0}]}\n\n',
+    'data: {"id":"logfare-1","object":"chat.completion.chunk","created":1,"model":"kimi-k2.7-code","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":1,"total_tokens":1}}\n\n',
+    'data: {"id":"logfare-1","object":"chat.completion.chunk","created":1,"model":"kimi-k2.7-code","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":19,"completion_tokens":316,"total_tokens":335,"prompt_tokens_details":{"cached_tokens":0},"neurons":116.55}}\n\n',
+    'data: [DONE]\n\n',
+  ]);
+  const sink = makeResponseSink();
+  await pipeOpenAIStream(upstream, sink);
+
+  const payloads = sink.body().split('\n\n').map((block: string) => {
+    const line = block.split('\n').find((entry: string) => entry.startsWith('data: '));
+    return line?.slice(6);
+  }).filter(Boolean);
+
+  assert.equal(payloads[0]?.startsWith('{'), true);
+  const first = JSON.parse(payloads[0]);
+  assert.equal(first.choices[0].delta.content, 'hi');
+  assert.equal(first.usage, undefined);
+
+  const finish = payloads.filter((p: string) => p !== '[DONE]').map((p: string) => JSON.parse(p)).find((p: any) => p.choices?.[0]?.finish_reason);
+  assert.ok(finish?.usage);
+  assert.equal(finish.usage.prompt_tokens, 119);
+  assert.equal(finish.usage.completion_tokens, 416);
+  assert.equal(finish.usage.total_tokens, 435);
+  assert.equal(payloads.at(-1), '[DONE]');
+});
+
+test('streaming OpenAI requests include usage on the stream', () => {
+  const normalized = normalizeOpenAI({ model: 'gpt-5.5', stream: true, messages: [] });
+  assert.equal(normalized.stream_options.include_usage, true);
 });

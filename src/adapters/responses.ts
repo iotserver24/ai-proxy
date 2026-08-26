@@ -6,6 +6,7 @@ import {
   anthropicToResponses,
 } from '../utils/normalize.js';
 import { initSSE, writeSSEEvent, parseSSELine } from '../utils/sse.js';
+import { padResponsesUsage } from '../utils/usage.js';
 import crypto from 'crypto';
 
 const CLAUDE_MODELS = new Set([
@@ -105,11 +106,7 @@ export function openAIToResponses(openai: any, model: string): any {
     model: openai.model || model,
     output,
     status: 'completed',
-    usage: {
-      input_tokens: openai.usage?.prompt_tokens || 0,
-      output_tokens: openai.usage?.completion_tokens || 0,
-      total_tokens: openai.usage?.total_tokens || 0,
-    },
+    usage: padResponsesUsage(openai.usage),
   };
 }
 
@@ -139,6 +136,7 @@ export async function openaiStreamToResponses(
   let textItem: ResponseTextItem | undefined;
   const toolItems = new Map<number, ResponseToolItem>();
   let finalEmitted = false;
+  let lastUsage: any;
 
   writeSSEEvent(res, 'response.created', {
     type: 'response.created',
@@ -285,7 +283,7 @@ export async function openaiStreamToResponses(
         model,
         output,
         status: 'completed',
-        usage: usage ? openAIUsageToResponses(usage) : null,
+        usage: padResponsesUsage(openAIUsageToResponses(usage)),
       },
     });
   }
@@ -312,7 +310,7 @@ export async function openaiStreamToResponses(
         }
         if (parsed.data === undefined) continue;
         if (parsed.data === '[DONE]') {
-          emitFinal();
+          emitFinal(lastUsage);
           continue;
         }
 
@@ -335,8 +333,13 @@ export async function openaiStreamToResponses(
           }
           for (const toolCall of delta?.tool_calls || []) emitToolDelta(toolCall);
           if (delta?.function_call) emitToolDelta({ index: 0, function: delta.function_call });
-          if (finishReason) emitFinal(chunk.usage);
-          if (currentEvent === 'response.completed') emitFinal(chunk.usage);
+          if (chunk.usage) {
+            const nextTotal = chunk.usage.total_tokens ?? chunk.usage.prompt_tokens ?? 0;
+            const prevTotal = lastUsage?.total_tokens ?? lastUsage?.prompt_tokens ?? 0;
+            if (!lastUsage || nextTotal >= prevTotal) lastUsage = chunk.usage;
+          }
+          if (finishReason && chunk.usage) emitFinal(lastUsage);
+          if (currentEvent === 'response.completed') emitFinal(chunk.usage || lastUsage);
         } catch {
           // Ignore malformed/non-JSON SSE records and continue the stream.
         }
@@ -346,7 +349,7 @@ export async function openaiStreamToResponses(
     if (err.name !== 'AbortError') console.error('stream error:', err.message);
   }
 
-  emitFinal();
+  emitFinal(lastUsage);
   if (!res.writableEnded) res.end();
 }
 
@@ -460,7 +463,7 @@ export async function anthropicStreamToResponses(
         model,
         output,
         status: 'completed',
-        usage: lastUsage ? anthropicUsageToResponses(lastUsage) : null,
+        usage: padResponsesUsage(anthropicUsageToResponses(lastUsage)),
       },
     });
   }

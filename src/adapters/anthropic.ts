@@ -3,6 +3,7 @@ import { callUpstream, isRetryableError, UPSTREAM_CHAT_PATH, UPSTREAM_MESSAGES_P
 import { normalizeAnthropic } from '../utils/normalize.js';
 import { initSSE, writeSSEEvent, parseSSELine } from '../utils/sse.js';
 import crypto from 'crypto';
+import { padAnthropicUsage } from '../utils/usage.js';
 
 export async function handleAnthropic(req: Request, res: ExpressResponse): Promise<void> {
   const reqId = crypto.randomUUID().slice(0, 8);
@@ -73,10 +74,10 @@ export function openAIToAnthropic(openai: any, model: string): any {
     model: openai.model || model,
     stop_reason: mapFinishReason(choice.finish_reason),
     stop_sequence: null,
-    usage: {
+    usage: padAnthropicUsage({
       input_tokens: openai.usage?.prompt_tokens || 0,
       output_tokens: openai.usage?.completion_tokens || 0,
-    },
+    }),
   };
 }
 
@@ -208,7 +209,11 @@ async function anthropicStream(upstreamRes: globalThis.Response, res: ExpressRes
           for (const toolCall of delta?.tool_calls || []) emitToolDelta(toolCall);
           if (delta?.function_call) emitToolDelta({ index: 0, function: delta.function_call });
           if (reason) finishReason = reason;
-          if (chunk.usage) finalUsage = chunk.usage;
+          if (chunk.usage) {
+            const nextTotal = (chunk.usage.total_tokens ?? 0);
+            const prevTotal = finalUsage?.total_tokens ?? 0;
+            if (!finalUsage || nextTotal >= prevTotal) finalUsage = chunk.usage;
+          }
         } catch {
           // Skip invalid JSON records while keeping the SSE connection alive.
         }
@@ -224,7 +229,10 @@ async function anthropicStream(upstreamRes: globalThis.Response, res: ExpressRes
   writeSSEEvent(res, 'message_delta', {
     type: 'message_delta',
     delta: { stop_reason: mapFinishReason(finishReason), stop_sequence: null },
-    usage: { output_tokens: finalUsage?.completion_tokens || 0 },
+    usage: padAnthropicUsage({
+      input_tokens: finalUsage?.prompt_tokens ?? finalUsage?.input_tokens,
+      output_tokens: finalUsage?.completion_tokens ?? finalUsage?.output_tokens,
+    }),
   });
   writeSSEEvent(res, 'message_stop', { type: 'message_stop' });
 

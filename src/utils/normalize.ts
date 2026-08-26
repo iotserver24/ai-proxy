@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { ensureStreamUsage, padResponsesUsage } from './usage.js';
 
 export interface NormalizedMessage {
   role: string;
@@ -51,6 +52,7 @@ export function normalizeOpenAI(body: any): NormalizedRequest {
     'service_tier',
   ]);
 
+  ensureStreamUsage(result);
   return result;
 }
 
@@ -78,6 +80,7 @@ export function normalizeAnthropic(body: any): NormalizedRequest {
     'metadata',
   ]);
 
+  ensureStreamUsage(result);
   return result;
 }
 
@@ -160,6 +163,7 @@ export function normalizeResponses(body: any): NormalizedRequest {
     'service_tier',
   ]);
 
+  ensureStreamUsage(result);
   return result;
 }
 
@@ -312,11 +316,7 @@ export function anthropicToResponses(anth: any, model: string): any {
     model: anth.model || model,
     output,
     status: 'completed',
-    usage: {
-      input_tokens: anth.usage?.input_tokens || 0,
-      output_tokens: anth.usage?.output_tokens || 0,
-      total_tokens: (anth.usage?.input_tokens || 0) + (anth.usage?.output_tokens || 0),
-    },
+    usage: padResponsesUsage(anth.usage),
   };
 }
 

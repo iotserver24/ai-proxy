@@ -2,6 +2,7 @@ import type { Request, Response as ExpressResponse } from 'express';
 import { callUpstream, isRetryableError, UPSTREAM_CHAT_PATH, UPSTREAM_MESSAGES_PATH } from '../upstream.js';
 import { normalizeOpenAI } from '../utils/normalize.js';
 import { initSSE, writeSSE, endSSE } from '../utils/sse.js';
+import { padOpenAIUsage } from '../utils/usage.js';
 import crypto from 'crypto';
 
 export async function handleOpenAI(req: Request, res: ExpressResponse): Promise<void> {
@@ -33,6 +34,7 @@ export async function handleOpenAI(req: Request, res: ExpressResponse): Promise<
       await pipeOpenAIStream(upstreamRes, res);
     } else {
       const json = await upstreamRes.json();
+      json.usage = padOpenAIUsage(json.usage);
       res.json(json);
     }
   }
@@ -48,7 +50,7 @@ export async function handleOpenAI(req: Request, res: ExpressResponse): Promise<
   }
 }
 
-async function pipeOpenAIStream(upstreamRes: globalThis.Response, res: ExpressResponse): Promise<void> {
+export async function pipeOpenAIStream(upstreamRes: globalThis.Response, res: ExpressResponse): Promise<void> {
   initSSE(res);
 
   const reader = upstreamRes.body?.getReader();
@@ -59,6 +61,29 @@ async function pipeOpenAIStream(upstreamRes: globalThis.Response, res: ExpressRe
 
   const decoder = new TextDecoder();
   let buffer = '';
+  let lastUsage: ReturnType<typeof padOpenAIUsage> | undefined;
+  let heldFinish: any;
+  let meta: { id?: string; created?: number; model?: string } = {};
+
+  function rememberUsage(usage: any): void {
+    const padded = padOpenAIUsage(usage);
+    if (!lastUsage || padded.total_tokens >= lastUsage.total_tokens) {
+      lastUsage = padded;
+    }
+  }
+
+  function flushFinish(): void {
+    const chunk = heldFinish || {
+      id: meta.id,
+      object: 'chat.completion.chunk',
+      created: meta.created,
+      model: meta.model,
+      choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+    };
+    chunk.usage = lastUsage || padOpenAIUsage(undefined);
+    writeSSE(res, chunk);
+    heldFinish = undefined;
+  }
 
   try {
     while (true) {
@@ -70,13 +95,46 @@ async function pipeOpenAIStream(upstreamRes: globalThis.Response, res: ExpressRe
       buffer = lines.pop() || '';
 
       for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6);
-          if (data === '[DONE]') {
-            res.write('data: [DONE]\n\n');
-            res.end();
-            return;
+        if (!line.startsWith('data: ')) continue;
+        const data = line.slice(6);
+        if (data === '[DONE]') {
+          flushFinish();
+          res.write('data: [DONE]\n\n');
+          res.end();
+          return;
+        }
+
+        try {
+          const chunk = JSON.parse(data);
+          if (chunk.id) meta.id = chunk.id;
+          if (chunk.created) meta.created = chunk.created;
+          if (chunk.model) meta.model = chunk.model;
+          if (chunk.usage) rememberUsage(chunk.usage);
+
+          const choice = chunk.choices?.[0];
+          const delta = choice?.delta || {};
+          const hasContent = !!(
+            delta.content ||
+            delta.tool_calls ||
+            delta.function_call ||
+            delta.role ||
+            delta.reasoning_content
+          );
+          const finished = !!choice?.finish_reason;
+
+          if (hasContent && !finished) {
+            writeSSE(res, chunk);
+            continue;
           }
+
+          if (finished || chunk.usage) {
+            heldFinish = chunk;
+            if (chunk.usage) delete chunk.usage;
+            continue;
+          }
+
+          writeSSE(res, chunk);
+        } catch {
           res.write(`data: ${data}\n\n`);
         }
       }
@@ -88,6 +146,7 @@ async function pipeOpenAIStream(upstreamRes: globalThis.Response, res: ExpressRe
   }
 
   if (!res.writableEnded) {
+    flushFinish();
     res.write('data: [DONE]\n\n');
     res.end();
   }
