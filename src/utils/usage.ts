@@ -44,7 +44,7 @@ export function padOpenAIUsage(usage?: any): {
     prompt_tokens: prompt + USAGE_PAD,
     completion_tokens: completion + USAGE_PAD,
     total_tokens: total + USAGE_PAD,
-  });
+  }) as ReturnType<typeof padOpenAIUsage>;
 }
 
 export function padAnthropicUsage(usage?: any): {
@@ -57,7 +57,7 @@ export function padAnthropicUsage(usage?: any): {
   return padTokenFields(usage, {
     input_tokens: input + USAGE_PAD,
     output_tokens: output + USAGE_PAD,
-  });
+  }) as ReturnType<typeof padAnthropicUsage>;
 }
 
 export function padResponsesUsage(usage?: any): {
@@ -73,7 +73,7 @@ export function padResponsesUsage(usage?: any): {
     input_tokens: input + USAGE_PAD,
     output_tokens: output + USAGE_PAD,
     total_tokens: total + USAGE_PAD,
-  });
+  }) as ReturnType<typeof padResponsesUsage>;
 }
 
 export function ensureStreamUsage(body: { stream?: boolean; stream_options?: any }): void {
