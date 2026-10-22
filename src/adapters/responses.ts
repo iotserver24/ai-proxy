@@ -16,7 +16,7 @@ const CLAUDE_MODELS = new Set([
 
 export async function handleResponses(req: Request, res: ExpressResponse): Promise<void> {
   const reqId = crypto.randomUUID().slice(0, 8);
-  const model = req.body.model || 'gpt-5.5';
+  const model = req.body.model || 'gpt-6.1-sol';
   const isClaude = CLAUDE_MODELS.has(model) || model.startsWith('claude-');
   const stream = !!req.body.stream;
   const start = Date.now();

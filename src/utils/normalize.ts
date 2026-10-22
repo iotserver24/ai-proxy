@@ -21,7 +21,7 @@ export interface NormalizedRequest {
   [key: string]: any;
 }
 
-const DEFAULT_MODEL = 'gpt-5.5';
+const DEFAULT_MODEL = 'gpt-6.1-sol';
 
 export function normalizeOpenAI(body: any): NormalizedRequest {
   const result: NormalizedRequest = {

@@ -30,13 +30,13 @@ app.get('/v1/models', async (_req: Request, res: ExpressResponse) => {
     object: 'list',
     data: [
       {
-        id: 'gpt-5.5',
+        id: 'gpt-6.1-sol',
         object: 'model',
         created: 1700000000,
         owned_by: 'agentrouter',
       },
       {
-        id: 'gpt-5.4',
+        id: 'gpt-5.6-sol',
         object: 'model',
         created: 1690000000,
         owned_by: 'agentrouter',
