@@ -96,7 +96,12 @@ export function normalizeResponses(body: any): NormalizedRequest {
     messages.push({ role: 'user', content: input });
   } else if (Array.isArray(input)) {
     for (const item of input) {
-      if (!item || !item.type) continue;
+      if (!item) continue;
+      // Clients like ZCode send plain {role, content} items with no `type` field.
+      if (!item.type) {
+        if (item.role) messages.push(responsesMessageToChat(item));
+        continue;
+      }
 
       switch (item.type) {
         case 'message':

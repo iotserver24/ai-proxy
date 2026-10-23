@@ -1,5 +1,6 @@
 import type { Request, Response as ExpressResponse } from 'express';
-import { callUpstream, isRetryableError, UPSTREAM_CHAT_PATH, UPSTREAM_MESSAGES_PATH } from '../upstream.js';
+import { Readable } from 'node:stream';
+import { callUpstream, isRetryableError, UPSTREAM_CHAT_PATH, UPSTREAM_MESSAGES_PATH, UPSTREAM_RESPONSES_PATH } from '../upstream.js';
 import {
   normalizeResponses,
   buildAnthropicBody,
@@ -24,17 +25,21 @@ export async function handleResponses(req: Request, res: ExpressResponse): Promi
   const chatBody = normalizeResponses(req.body);
   const anthBody = buildAnthropicBody(req.body);
 
-  const primaryPath = isClaude ? UPSTREAM_MESSAGES_PATH : UPSTREAM_CHAT_PATH;
-  const fallbackPath = isClaude ? UPSTREAM_CHAT_PATH : UPSTREAM_MESSAGES_PATH;
-  const primaryBody = isClaude ? anthBody : chatBody;
-  const fallbackBody = isClaude ? chatBody : anthBody;
+  const primaryPath = UPSTREAM_RESPONSES_PATH;
+  const fallbacks = (isClaude
+    ? [{ path: UPSTREAM_MESSAGES_PATH, body: anthBody }]
+    : [{ path: UPSTREAM_CHAT_PATH, body: chatBody }, { path: UPSTREAM_MESSAGES_PATH, body: anthBody }]
+  ).filter((f) => f.path !== primaryPath);
 
-  async function attempt(path: string, body: unknown, attemptNum: number): Promise<void> {
+  async function attempt(path: string, body: unknown, remaining: number): Promise<void> {
     const upstreamRes = await callUpstream(path, body, stream);
 
-    if (!upstreamRes.ok && attemptNum < 2 && isRetryableError(upstreamRes)) {
-      console.log(`[${reqId}] retry ${path} -> ${fallbackPath} (status ${upstreamRes.status})`);
-      return attempt(fallbackPath, fallbackBody, attemptNum + 1);
+    if (!upstreamRes.ok && isRetryableError(upstreamRes)) {
+      const next = fallbacks.shift();
+      if (next) {
+        console.log(`[${reqId}] retry ${path} -> ${next.path} (status ${upstreamRes.status})`);
+        return attempt(next.path, next.body, --remaining);
+      }
     }
 
     if (!upstreamRes.ok) {
@@ -46,6 +51,11 @@ export async function handleResponses(req: Request, res: ExpressResponse): Promi
 
     const latency = Date.now() - start;
     console.log(`[${reqId}] route=${path} model=${model} stream=${stream} ${latency}ms ok`);
+
+    if (path === UPSTREAM_RESPONSES_PATH) {
+      await pipeResponses(upstreamRes, res, stream);
+      return;
+    }
 
     if (stream) {
       if (path === UPSTREAM_MESSAGES_PATH) {
@@ -62,7 +72,7 @@ export async function handleResponses(req: Request, res: ExpressResponse): Promi
   }
 
   try {
-    await attempt(primaryPath, primaryBody, 1);
+    await attempt(primaryPath, req.body, fallbacks.length);
   } catch (err: any) {
     const latency = Date.now() - start;
     console.log(`[${reqId}] fail error=${err.message} ${latency}ms`);
@@ -70,6 +80,35 @@ export async function handleResponses(req: Request, res: ExpressResponse): Promi
       res.status(502).json({ error: { message: 'upstream request failed', detail: err.message } });
     }
   }
+}
+
+// Native /responses: the client body goes upstream untouched and the SSE stream is
+// forwarded byte for byte, so the request looks exactly like a first-party client's.
+async function pipeResponses(
+  upstreamRes: globalThis.Response,
+  res: ExpressResponse,
+  stream: boolean,
+): Promise<void> {
+  if (!stream) {
+    const json = await upstreamRes.json();
+    if (json?.usage) json.usage = padResponsesUsage(json.usage);
+    res.json(json);
+    return;
+  }
+
+  if (!upstreamRes.body) {
+    res.status(502).json({ error: { message: 'upstream returned no body' } });
+    return;
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  });
+  const body = Readable.fromWeb(upstreamRes.body as any);
+  body.on('error', () => res.end());
+  body.pipe(res);
 }
 
 export function openAIToResponses(openai: any, model: string): any {

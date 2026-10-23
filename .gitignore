@@ -26,6 +26,9 @@ out/
 logs
 *.log
 
+# Captured client traffic
+captures/
+
 # Runtime data
 pids
 *.pid
